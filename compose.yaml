@@ -1,0 +1,90 @@
+services:
+  db:
+    image: postgres:17-alpine
+    restart: unless-stopped
+    environment:
+      POSTGRES_DB: ${POSTGRES_DB:-library_management}
+      POSTGRES_USER: ${POSTGRES_USER:-library_app}
+      POSTGRES_PASSWORD: ${POSTGRES_PASSWORD:-library_dev_only_change_before_shared_use}
+    ports:
+      - "${POSTGRES_PORT:-5432}:5432"
+    volumes:
+      - postgres_data:/var/lib/postgresql/data
+    healthcheck:
+      test: ["CMD-SHELL", "pg_isready -U $${POSTGRES_USER} -d $${POSTGRES_DB}"]
+      interval: 5s
+      timeout: 5s
+      retries: 12
+      start_period: 5s
+
+  backend:
+    build:
+      context: .
+      dockerfile: backend/Dockerfile
+    restart: unless-stopped
+    working_dir: /var/www/html
+    env_file:
+      - ./backend/.env
+    environment:
+      APP_NAME: ${APP_NAME:-Library Management System}
+      APP_ENV: local
+      APP_DEBUG: ${APP_DEBUG:-true}
+      APP_URL: http://localhost:${APP_PORT:-8080}
+      DB_CONNECTION: pgsql
+      DB_HOST: db
+      DB_PORT: 5432
+      DB_DATABASE: ${POSTGRES_DB:-library_management}
+      DB_USERNAME: ${POSTGRES_USER:-library_app}
+      DB_PASSWORD: ${POSTGRES_PASSWORD:-library_dev_only_change_before_shared_use}
+      SANCTUM_STATEFUL_DOMAINS: localhost,localhost:${APP_PORT:-8080},127.0.0.1,127.0.0.1:${APP_PORT:-8080}
+    volumes:
+      - ./backend:/var/www/html
+      - backend_vendor:/var/www/html/vendor
+    depends_on:
+      db:
+        condition: service_healthy
+    command: ["sh", "-lc", "chown -R www-data:www-data storage bootstrap/cache && exec php-fpm -F"]
+
+  frontend:
+    build:
+      context: ./frontend
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    environment:
+      VITE_API_BASE_URL: ${VITE_API_BASE_URL:-/api}
+    volumes:
+      - ./frontend:/app
+      - frontend_node_modules:/app/node_modules
+    command: ["sh", "-lc", "npm install && npm run dev -- --host 0.0.0.0"]
+    healthcheck:
+      test: ["CMD", "node", "-e", "fetch('http://127.0.0.1:5173/').then((response) => process.exit(response.ok ? 0 : 1)).catch(() => process.exit(1))"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+  nginx:
+    build:
+      context: ./docker/nginx
+      dockerfile: Dockerfile
+    restart: unless-stopped
+    ports:
+      - "${APP_PORT:-8080}:80"
+    depends_on:
+      backend:
+        condition: service_started
+      frontend:
+        condition: service_healthy
+    volumes:
+      - ./backend/public:/var/www/html/public:ro
+    healthcheck:
+      test: ["CMD-SHELL", "wget -q --spider http://127.0.0.1/api/health || exit 1"]
+      interval: 10s
+      timeout: 5s
+      retries: 12
+      start_period: 20s
+
+volumes:
+  postgres_data:
+  backend_vendor:
+  frontend_node_modules:
